@@ -1,0 +1,50 @@
+# Build artifacts
+*.exe
+*.msi
+*.zip
+build/
+dist/
+bin/
+obj/
+
+# Logs
+*.log
+logs/
+
+# Secrets & local config (NEVER COMMIT)
+*.key
+*.pem
+*.pfx
+config.local.json
+secrets.json
+.env
+.env.*
+
+# MeshCentral generated data (should not live in repo)
+meshcentral-data/
+meshcentral-backups/
+meshcentral-files/
+meshcentral-recordings/
+node_modules/
+
+# MongoDB local data
+data/db/
+mongo-data/
+
+# IDE / OS
+.vscode/
+.idea/
+.vs/
+*.suo
+*.user
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# PowerShell
+*.ps1.bak
+
+# Temp
+*.tmp
+*.bak
+~$*
