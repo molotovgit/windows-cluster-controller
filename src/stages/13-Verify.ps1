@@ -156,6 +156,19 @@ function Invoke-VerifyStage {
     $checks = New-Object System.Collections.Generic.List[object]
     function _check($n,$s,$d) { $checks.Add([pscustomobject]@{ Name = $n; Status = $s; Detail = $d }) }
 
+    if ($DryRun) {
+        _check 'Verify (DryRun)' 'Pass' '-DryRun: skipping real health checks; orchestrator-level dry-run is enough'
+        return [pscustomobject]@{
+            Overall     = 'Pass'
+            Checks      = $checks.ToArray()
+            Summary     = ''
+            SummaryPath = $SummaryPath
+            PassCount   = 1
+            WarnCount   = 0
+            FailCount   = 0
+        }
+    }
+
     # 1. MeshCentral service.
     $mc = Get-ServiceInfo -Name 'MeshCentral'
     if ($mc.Found -and $mc.Status -eq 'Running') {
