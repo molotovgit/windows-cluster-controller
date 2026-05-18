@@ -170,3 +170,35 @@ Describe 'Install-NssmService' {
         $r.Detail | Should -Match 'nssm install exited 1'
     }
 }
+
+Describe 'ConvertTo-NssmArgList (path-with-space quoting)' {
+    # Regression test for bug 13: Start-Process -ArgumentList does not
+    # auto-quote elements containing whitespace, which led to NSSM
+    # registering Application='C:\Program' instead of the full pwsh path.
+
+    It 'wraps space-bearing args in double quotes' {
+        $out = ConvertTo-NssmArgList -Argv @('install','ClusterAnnouncer','C:\Program Files\PowerShell\7\pwsh.exe')
+        $out[0] | Should -Be 'install'
+        $out[1] | Should -Be 'ClusterAnnouncer'
+        $out[2] | Should -Be '"C:\Program Files\PowerShell\7\pwsh.exe"'
+    }
+
+    It 'leaves args without whitespace untouched' {
+        $out = ConvertTo-NssmArgList -Argv @('set','ClusterAnnouncer','Start','SERVICE_AUTO_START')
+        $out | Should -Be @('set','ClusterAnnouncer','Start','SERVICE_AUTO_START')
+    }
+
+    It 'is idempotent on already-quoted values' {
+        $out = ConvertTo-NssmArgList -Argv @('"already quoted"','plain')
+        $out[0] | Should -Be '"already quoted"'
+        $out[1] | Should -Be 'plain'
+    }
+
+    It 'preserves the inner-content even when AppParameters has nested quotes' {
+        # AppParameters often contains -File "C:\foo bar\x.ps1" with spaces.
+        $appParams = '-NoProfile -ExecutionPolicy Bypass -File "C:\ProgramData\ClusterController\bin\announcer.ps1"'
+        $out = ConvertTo-NssmArgList -Argv @('set','ClusterAnnouncer','AppParameters',$appParams)
+        # Outer quoting wraps the whole AppParameters string because it has whitespace.
+        $out[3] | Should -Be ('"' + $appParams + '"')
+    }
+}

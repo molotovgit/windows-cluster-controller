@@ -16,6 +16,35 @@ $ErrorActionPreference = 'Stop'
 
 # ---------- invoker seam ----------
 
+function ConvertTo-NssmArgList {
+    <#
+    .SYNOPSIS
+        Quote argv elements that contain whitespace so Start-Process'
+        -ArgumentList serialisation does not split them across argv slots.
+
+    .DESCRIPTION
+        Start-Process -ArgumentList joins its elements with spaces but does
+        NOT auto-quote elements that themselves contain spaces. Passing
+        @('install','Svc','C:\Program Files\PS\7\pwsh.exe') ends up on the
+        child's command line as `install Svc C:\Program Files\PS\7\pwsh.exe`
+        -- four argv slots, not three. Result: NSSM registers the service
+        with Application='C:\Program' and AppParameters starts with
+        'Files\PS\7\pwsh.exe ...', which fails at start-time with
+        "system cannot find the file specified".
+
+        Wrap each whitespace-bearing element in double quotes (idempotent --
+        already-quoted elements are left as-is).
+    #>
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param([Parameter(Mandatory)][AllowEmptyCollection()][string[]]$Argv)
+    return @($Argv | ForEach-Object {
+        if ($null -eq $_) { return '""' }
+        if ($_ -match '\s' -and -not ($_ -match '^".*"$')) { return ('"' + $_ + '"') }
+        return $_
+    })
+}
+
 function Get-DefaultServiceInvoker {
     @{
         GetService = {
@@ -46,7 +75,10 @@ function Get-DefaultServiceInvoker {
         }
         RunNssm = {
             param([string[]]$Argv)
-            $p = Start-Process -FilePath 'nssm.exe' -ArgumentList $Argv -PassThru -Wait -WindowStyle Hidden -RedirectStandardOutput ([System.IO.Path]::GetTempFileName())
+            # Quote space-bearing args (paths under "Program Files", multi-word
+            # display names, etc.). See ConvertTo-NssmArgList for the why.
+            $quoted = ConvertTo-NssmArgList -Argv $Argv
+            $p = Start-Process -FilePath 'nssm.exe' -ArgumentList $quoted -PassThru -Wait -WindowStyle Hidden -RedirectStandardOutput ([System.IO.Path]::GetTempFileName())
             [pscustomobject]@{ ExitCode = [int]$p.ExitCode }
         }
     }
@@ -281,4 +313,5 @@ function Install-NssmService {
 Export-ModuleMember -Function `
     Get-ServiceInfo, Set-ServiceStartType, `
     Start-ServiceIdempotent, Stop-ServiceIdempotent, `
-    Wait-ServiceReady, Install-NssmService
+    Wait-ServiceReady, Install-NssmService, `
+    ConvertTo-NssmArgList
