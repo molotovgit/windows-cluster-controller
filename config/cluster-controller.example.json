@@ -1,0 +1,80 @@
+{
+  "_comment": "Copy to cluster-controller.json and edit. The setup script reads this once. All fields have defaults; the minimum useful change is setting controller.hostname.",
+
+  "controller": {
+    "_comment": "Identity. hostname is baked into the self-signed TLS cert SAN list and into Announcer responses.",
+    "hostname": "controller.lan",
+    "lan_ip": null,
+    "https_port": 443,
+    "agent_port": 4433,
+    "announcer_port": 8765
+  },
+
+  "db": {
+    "_comment": "mode=nedb is the default for small deployments (no install, file-backed, fine up to a few hundred agents). Switch to mongodb for larger or higher-throughput clusters.",
+    "mode": "nedb",
+    "mongodb": {
+      "bind": "127.0.0.1",
+      "port": 27017,
+      "data_dir": "%ProgramData%\\ClusterController\\mongo\\data",
+      "log_dir":  "%ProgramData%\\ClusterController\\mongo\\log"
+    }
+  },
+
+  "tls": {
+    "_comment": "mode=self-signed (default) generates a fresh cert on first run. mode=import expects an operator-supplied PFX. mode=letsencrypt is a future opt-in (controller must be internet-reachable on 80).",
+    "mode": "self-signed",
+    "self_signed": {
+      "cn":                "controller.lan",
+      "additional_sans":   ["controller", "localhost"],
+      "valid_for_days":    825
+    },
+    "import": {
+      "pfx_path":             null,
+      "pfx_password_envvar":  "CLUSTERCTRL_TLS_PFX_PASS"
+    }
+  },
+
+  "meshcentral": {
+    "_comment": "Override only what you must. Defaults are sane for a LAN-only single-controller deployment.",
+    "version_pin":      null,
+    "lan_only":         true,
+    "wan_only":         false,
+    "agents_port_same_as_https": true,
+    "data_dir":         "%ProgramData%\\MeshCentral\\meshcentral-data",
+    "files_dir":        "%ProgramData%\\MeshCentral\\meshcentral-files",
+    "backups_dir":      "%ProgramData%\\MeshCentral\\meshcentral-backups",
+    "device_groups": {
+      "hosts":  "cluster-hosts",
+      "vms":    "cluster-vms"
+    }
+  },
+
+  "share": {
+    "_comment": "SMB share that the host PCs pull the golden VHDX and agent .msh from. Read-only for Authenticated Users; full for Administrators.",
+    "name":      "ClusterShare",
+    "root":      "%ProgramData%\\ClusterController\\share",
+    "vhdx_subdir":   "vhdx",
+    "agents_subdir": "agents"
+  },
+
+  "admin": {
+    "_comment": "Initial admin user for the MeshCentral UI. Password is sourced from CLUSTERCTRL_ADMIN_PASS env var; if absent, the installer generates a secure random one and writes it to admin-bootstrap.txt with strict ACL.",
+    "username": "clusteradmin",
+    "password_envvar": "CLUSTERCTRL_ADMIN_PASS",
+    "bootstrap_file":  "%ProgramData%\\ClusterController\\admin-bootstrap.txt"
+  },
+
+  "firewall": {
+    "_comment": "Which network profiles to open the controller ports on. Public is intentionally off by default — controllers should not be exposed to public WiFi.",
+    "profiles": ["Domain", "Private"]
+  },
+
+  "logging": {
+    "log_dir":            "%ProgramData%\\ClusterController\\logs",
+    "console_level":      "Info",
+    "file_level":         "Debug",
+    "max_log_size_mb":    50,
+    "max_log_files":      10
+  }
+}
