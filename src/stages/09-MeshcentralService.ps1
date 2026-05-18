@@ -98,7 +98,12 @@ function Invoke-MeshcentralServiceStage {
     $dataDir   = Expand-ConfigPath -Value "$($cfg.meshcentral.data_dir)"
     $mcRoot    = Split-Path -Parent $dataDir
     $entry     = Join-Path $mcRoot 'node_modules\meshcentral\meshcentral.js'
-    $svcName   = 'MeshCentral'
+    # MeshCentral's --install creates a Windows service named 'meshcentral.exe'
+    # (the executable name without .exe-stripping). Older docs sometimes show
+    # 'MeshCentral' (TitleCase) but every version we've seen on Win11 24H2 uses
+    # 'meshcentral.exe'. Probe both names so we work either way.
+    $svcCandidates = @('meshcentral.exe','MeshCentral')
+    $svcName = $svcCandidates[0]
 
     _step 'Resolve service plan' 'Pass' "root=$mcRoot entry=$entry port=$httpsPort"
 
@@ -115,18 +120,35 @@ function Invoke-MeshcentralServiceStage {
     }
     _step 'Locate node' 'Pass' "node=$nodeExe"
 
+    # Helper: find the service under any of the known candidate names.
+    function _findMcService {
+        foreach ($n in $svcCandidates) {
+            $info = Get-ServiceInfo -Name $n
+            if ($info.Found) { return [pscustomobject]@{ Name = $n; Info = $info } }
+        }
+        return $null
+    }
+
     # 2. Is the service already installed?
-    $svc = Get-ServiceInfo -Name $svcName
+    $found = _findMcService
     $installPath = $null
-    if (-not $svc.Found) {
-        # Primary: node meshcentral --install
+    if ($found) {
+        $svcName = $found.Name
+        _step 'Install MeshCentral service' 'Pass' "service '$svcName' already installed; state=$($found.Info.Status)"
+    } else {
+        # Primary: node meshcentral --install. MeshCentral exits 1 even on
+        # success (prints "service installed" to stdout, ExitCode=1), so
+        # ignore the exit code and instead check whether a service named
+        # any of $svcCandidates exists AFTER the install command.
         if (Test-Path -LiteralPath $entry) {
             $r = & $script:MeshcentralServiceInvokers.RunMeshcentralInstall $nodeExe $entry $mcRoot
-            if ($r.ExitCode -eq 0) {
-                _step 'Install MeshCentral service (built-in)' 'Pass' "node meshcentral --install exited 0"
+            $found = _findMcService
+            if ($found) {
+                $svcName = $found.Name
+                _step 'Install MeshCentral service (built-in)' 'Pass' "service '$svcName' registered (node meshcentral --install exited $($r.ExitCode); MeshCentral's installer often exits non-zero even on success)"
                 $installPath = 'meshcentral --install'
             } else {
-                _step 'Install MeshCentral service (built-in)' 'Warn' "node meshcentral --install exited $($r.ExitCode); falling back to NSSM"
+                _step 'Install MeshCentral service (built-in)' 'Warn' "node meshcentral --install exited $($r.ExitCode) and no service is registered; falling back to NSSM"
             }
         } else {
             _step 'Install MeshCentral service (built-in)' 'Warn' "meshcentral.js not found at $entry; falling back to NSSM"
@@ -143,15 +165,13 @@ function Invoke-MeshcentralServiceStage {
                 return [pscustomobject]@{
                     Overall     = 'Fail'
                     Steps       = $steps.ToArray()
-                    Detail      = "MeshCentral service install failed via both built-in and NSSM"
-                    Remediation = "Manually run 'node $entry --install' from $mcRoot as Administrator and inspect the error."
+                    Detail      = "MeshCentral service install failed via both built-in and NSSM (NSSM may not be installed on this PC)"
+                    Remediation = "Manually run 'node $entry --install' from $mcRoot as Administrator. If that doesn't work, install NSSM (winget install -e --id nssm.nssm) and re-run."
                 }
             }
             _step 'Install MeshCentral service (NSSM)' 'Pass' "NSSM-registered service '$svcName'"
             $installPath = 'NSSM'
         }
-    } else {
-        _step 'Install MeshCentral service' 'Pass' "service '$svcName' already installed; state=$($svc.Status)"
     }
 
     # 3. Set startup type Automatic.

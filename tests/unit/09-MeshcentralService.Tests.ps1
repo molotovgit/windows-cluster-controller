@@ -73,15 +73,22 @@ Describe 'Invoke-MeshcentralServiceStage' {
             }
             # Simulate the post-install GetService returning Found=true after RunMeshcentralInstall.
             & (Get-Module Service) {
-                $script:installCallCount = 0
+                # Model: service starts NotInstalled; install transitions it
+                # to Running. The new stage code probes BOTH service-name
+                # candidates ('meshcentral.exe' and 'MeshCentral') so a
+                # per-call counter doesn't work -- use a state flag.
+                $script:svcInstalled = $false
                 Set-ServiceInvoker -Name GetService -ScriptBlock {
                     param($n)
-                    $script:installCallCount++
-                    if ($script:installCallCount -le 1) { [pscustomobject]@{ Found=$false; Status='NotInstalled'; StartType=$null } }
-                    elseif ($script:installCallCount -eq 2) { [pscustomobject]@{ Found=$true; Status='Stopped'; StartType='Automatic' } }
-                    else { [pscustomobject]@{ Found=$true; Status='Running'; StartType='Automatic' } }
+                    if ($script:svcInstalled) { [pscustomobject]@{ Found=$true; Status='Running'; StartType='Automatic' } }
+                    else { [pscustomobject]@{ Found=$false; Status='NotInstalled'; StartType=$null } }
                 }
+                Set-ServiceInvoker -Name SetStartType -ScriptBlock { param($n,$t) }
                 Set-ServiceInvoker -Name StartService -ScriptBlock { param($n) }
+            }
+            # Override the install invoker so it flips the state flag.
+            Set-MeshcentralServiceInvoker -Name RunMeshcentralInstall -ScriptBlock {
+                param($n,$e,$w) (Get-Module Service).Invoke({ $script:svcInstalled = $true }); [pscustomobject]@{ ExitCode = 0 }
             }
             $r = Invoke-MeshcentralServiceStage -Config $cfg -ReadyWaitSeconds 2 6>$null
             $r.Overall | Should -BeIn 'Pass','Warn'
@@ -102,16 +109,16 @@ Describe 'Invoke-MeshcentralServiceStage' {
         'js' | Set-Content -LiteralPath $entry -Encoding ascii
         try {
             & (Get-Module Service) {
-                $script:installCallCount = 0
+                $script:svcInstalled = $false
                 Set-ServiceInvoker -Name GetService -ScriptBlock {
                     param($n)
-                    $script:installCallCount++
-                    if ($script:installCallCount -le 1) { [pscustomobject]@{ Found=$false; Status='NotInstalled'; StartType=$null } }
-                    else { [pscustomobject]@{ Found=$true; Status='Running'; StartType='Automatic' } }
+                    if ($script:svcInstalled) { [pscustomobject]@{ Found=$true; Status='Running'; StartType='Automatic' } }
+                    else { [pscustomobject]@{ Found=$false; Status='NotInstalled'; StartType=$null } }
                 }
                 Set-ServiceInvoker -Name StartService -ScriptBlock { param($n) }
                 Set-ServiceInvoker -Name SetStartType -ScriptBlock { param($n,$t) }
-                Set-ServiceInvoker -Name RunNssm -ScriptBlock { param($a) [pscustomobject]@{ ExitCode = 0 } }
+                # NSSM register flips the state flag.
+                Set-ServiceInvoker -Name RunNssm -ScriptBlock { param($a) $script:svcInstalled = $true; [pscustomobject]@{ ExitCode = 0 } }
             }
             & (Get-Module Net) {
                 Set-NetInvoker -Name HttpProbe -ScriptBlock { param($u,$t) [pscustomobject]@{ Status = 200; Body = '' } }
