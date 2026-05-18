@@ -18,6 +18,7 @@ BeforeAll {
 }
 
 AfterAll {
+    Reset-ClusterLogState
     Remove-Item -LiteralPath $script:tmp -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item Env:CLUSTERCTRL_ALLOW_TEST_SEAMS -ErrorAction SilentlyContinue
     Remove-Item Env:CLUSTERCTRL_NOAUTORUN        -ErrorAction SilentlyContinue
