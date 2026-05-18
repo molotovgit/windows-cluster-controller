@@ -119,7 +119,62 @@ function Invoke-AnnouncerStage {
     }
     _step 'Write announcer script' 'Pass' "$scriptPath"
 
-    # 2. Install as NSSM service.
+    # 2. Ensure NSSM is reachable before calling Install-NssmService. NSSM
+    # isn't part of Windows; we have to download it. lib/Service's invoker
+    # calls 'nssm.exe' by name, so we install it into a location on PATH.
+    function _EnsureNssm {
+        $existing = Get-Command nssm.exe -ErrorAction SilentlyContinue
+        if ($existing) { return $existing.Source }
+        $nssmDir = Join-Path $env:ProgramData 'ClusterController\bin'
+        $nssmExe = Join-Path $nssmDir 'nssm.exe'
+        if (Test-Path -LiteralPath $nssmExe) {
+            if (-not ($env:Path -split ';' | Where-Object { $_ -eq $nssmDir })) {
+                $env:Path = "$nssmDir;$env:Path"
+            }
+            return $nssmExe
+        }
+        Write-Host "Downloading NSSM (~500 KB) from nssm.cc ..." -ForegroundColor Yellow
+        if (-not (Test-Path -LiteralPath $nssmDir)) {
+            New-Item -Path $nssmDir -ItemType Directory -Force | Out-Null
+        }
+        $zipUrl = 'https://nssm.cc/release/nssm-2.24.zip'
+        $zip = Join-Path $env:TEMP ("nssm-" + [guid]::NewGuid().ToString('N').Substring(0,8) + '.zip')
+        try {
+            Invoke-WebRequest -Uri $zipUrl -OutFile $zip -UseBasicParsing -ErrorAction Stop
+            $extractDir = Join-Path $env:TEMP ("nssm-extract-" + [guid]::NewGuid().ToString('N').Substring(0,8))
+            Expand-Archive -Path $zip -DestinationPath $extractDir -Force
+            $arch = if ([Environment]::Is64BitOperatingSystem) { 'win64' } else { 'win32' }
+            $src = Get-ChildItem -Path $extractDir -Recurse -File -Filter nssm.exe |
+                   Where-Object { $_.DirectoryName -like "*\$arch" } |
+                   Select-Object -First 1
+            if (-not $src) { throw "nssm.exe ($arch) not found in extracted archive" }
+            Copy-Item -LiteralPath $src.FullName -Destination $nssmExe -Force
+            Remove-Item -LiteralPath $extractDir -Recurse -Force -ErrorAction SilentlyContinue
+        } finally {
+            Remove-Item -LiteralPath $zip -Force -ErrorAction SilentlyContinue
+        }
+        if (-not (Test-Path -LiteralPath $nssmExe)) {
+            throw "NSSM download succeeded but nssm.exe not at $nssmExe"
+        }
+        # Prepend to PATH for this process so lib/Service's `Start-Process nssm.exe` finds it.
+        $env:Path = "$nssmDir;$env:Path"
+        return $nssmExe
+    }
+
+    try {
+        $nssmExe = _EnsureNssm
+        _step 'Ensure NSSM' 'Pass' "nssm=$nssmExe"
+    } catch {
+        _step 'Ensure NSSM' 'Fail' "could not provision nssm.exe: $($_.Exception.Message)"
+        return [pscustomobject]@{
+            Overall     = 'Fail'
+            Steps       = $steps.ToArray()
+            Detail      = "NSSM is required for the Announcer service and could not be downloaded: $($_.Exception.Message)"
+            Remediation = "Download NSSM from https://nssm.cc/download manually and place nssm.exe under %ProgramData%\ClusterController\bin\, then re-run from -StartFromStage 12."
+        }
+    }
+
+    # 3. Install as NSSM service.
     $pwshExe = & $script:AnnouncerStageInvokers.ResolvePwshExe
     if (-not $pwshExe) {
         _step 'Install announcer service' 'Fail' 'no pwsh.exe or powershell.exe on PATH'
