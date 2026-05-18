@@ -147,10 +147,52 @@ function Write-StarterConfig {
     ($cfg | ConvertTo-Json -Depth 10) | Set-Content -LiteralPath $Path -Encoding utf8
 }
 
+function Test-IsStorePwsh {
+    # Microsoft Store version of PowerShell 7 (installed via `winget install
+    # Microsoft.PowerShell` on Win11 24H2+ by default) runs inside an app
+    # container that BLOCKS writes to HKLM:\Software regardless of token
+    # elevation. The controller's State module needs HKLM. Detect by path:
+    # the Store install lives under C:\Program Files\WindowsApps\.
+    param([string]$ExePath)
+    if (-not $ExePath) { return $false }
+    return ($ExePath -like '*\WindowsApps\*')
+}
+
 function Resolve-PwshExe {
+    # Prefer the MSI-installed pwsh under C:\Program Files\PowerShell\7\
+    # because it can write to HKLM. Fall back to Get-Command (which often
+    # resolves to the App Execution Alias -> Microsoft Store pwsh).
+    $msiPath = Join-Path $env:ProgramFiles 'PowerShell\7\pwsh.exe'
+    if (Test-Path -LiteralPath $msiPath) { return $msiPath }
     $c = Get-Command -Name 'pwsh' -ErrorAction SilentlyContinue
     if ($c) { return $c.Source }
     return $null
+}
+
+function Install-PwshMsi {
+    # Download and install the MSI version of PowerShell 7 from GitHub
+    # releases. Used by install.ps1 to remediate Bug 7 (Store pwsh's app
+    # container blocks HKLM writes) automatically rather than refusing.
+    [CmdletBinding()]
+    param([string]$Version = '7.6.1')
+    $url = "https://github.com/PowerShell/PowerShell/releases/download/v$Version/PowerShell-$Version-win-x64.msi"
+    $msi = Join-Path $env:TEMP ("pwsh-$Version-x64-" + [guid]::NewGuid().ToString('N').Substring(0,8) + '.msi')
+    Write-Host "Downloading PowerShell $Version MSI from $url ..." -ForegroundColor Yellow
+    try {
+        Invoke-WebRequest -Uri $url -OutFile $msi -UseBasicParsing -ErrorAction Stop
+    } catch {
+        Write-Error "Could not download MSI: $($_.Exception.Message)"
+        return $false
+    }
+    Write-Host "Installing $msi silently (msiexec /qn /norestart ADD_PATH=1) ..." -ForegroundColor Yellow
+    $log = Join-Path $env:TEMP ("pwsh-msi-install-" + [guid]::NewGuid().ToString('N').Substring(0,8) + '.log')
+    $proc = Start-Process msiexec.exe -ArgumentList @('/i', "`"$msi`"", '/qn', '/norestart', '/L*v', "`"$log`"", 'ADD_PATH=1') -PassThru -Wait
+    Remove-Item -LiteralPath $msi -Force -ErrorAction SilentlyContinue
+    if ($proc.ExitCode -ne 0 -and $proc.ExitCode -ne 3010) {
+        Write-Error "msiexec exit $($proc.ExitCode); log $log"
+        return $false
+    }
+    return (Test-Path -LiteralPath (Join-Path $env:ProgramFiles 'PowerShell\7\pwsh.exe'))
 }
 
 # ---------- main ----------
@@ -216,6 +258,20 @@ if ($env:CLUSTERCTRL_NOAUTORUN -ne '1') {
 
     # Decide which interpreter to run the orchestrator under. Prefer pwsh 7.
     $pwsh = Resolve-PwshExe
+    if ($pwsh -and (Test-IsStorePwsh -ExePath $pwsh)) {
+        Write-Host ""
+        Write-Host "WARNING: Only the Microsoft Store version of PowerShell 7 is installed." -ForegroundColor Yellow
+        Write-Host "         The Store version runs inside an app container that BLOCKS writes" -ForegroundColor Yellow
+        Write-Host "         to HKLM:\Software, which the State module requires." -ForegroundColor Yellow
+        Write-Host "         Installing the MSI version automatically ..." -ForegroundColor Yellow
+        if (Install-PwshMsi) {
+            $pwsh = Resolve-PwshExe
+            Write-Host "MSI install complete. Re-resolved pwsh: $pwsh" -ForegroundColor Green
+        } else {
+            Write-Error "Could not install MSI pwsh. Remediation: download manually from https://aka.ms/PowerShell-Release and re-run install.ps1."
+            exit 5
+        }
+    }
     $cfgPath = Join-Path $copied 'config\cluster-controller.json'
     if (-not (Test-Path -LiteralPath $cfgPath)) { $cfgPath = Join-Path $copied 'config\cluster-controller.example.json' }
 
