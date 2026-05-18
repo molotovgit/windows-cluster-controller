@@ -100,6 +100,36 @@ function New-IdempotentSmbShare {
         [string[]]$FullAccess = @('Administrators')
     )
 
+    # Resolve well-known account names to LOCALIZED forms via SID round-trip.
+    # On non-English Windows ('Authenticated Users' / 'Administrators' literal
+    # strings don't resolve -- the OS expects the localized name like Russian
+    # 'NT AUTHORITY\Прошедшие проверку'). SIDs are language-independent; we
+    # ask Windows what the local-language name for the well-known SID is,
+    # then pass THAT to New-SmbShare.
+    function _ResolveSid([string]$SidString, [string]$EnglishFallback) {
+        try {
+            return (New-Object System.Security.Principal.SecurityIdentifier($SidString)).Translate([System.Security.Principal.NTAccount]).Value
+        } catch {
+            $null = $_
+            return $EnglishFallback
+        }
+    }
+    $resolvedRead = $ReadAccess | ForEach-Object {
+        switch ($_) {
+            'Authenticated Users' { _ResolveSid 'S-1-5-11'     'Authenticated Users' }
+            'Everyone'            { _ResolveSid 'S-1-1-0'      'Everyone' }
+            'Users'               { _ResolveSid 'S-1-5-32-545' 'Users' }
+            default               { $_ }
+        }
+    }
+    $resolvedFull = $FullAccess | ForEach-Object {
+        switch ($_) {
+            'Administrators'      { _ResolveSid 'S-1-5-32-544' 'Administrators' }
+            'SYSTEM'              { _ResolveSid 'S-1-5-18'     'SYSTEM' }
+            default               { $_ }
+        }
+    }
+
     if (-not (Test-Path -LiteralPath $Path)) {
         return [pscustomobject]@{ Ok = $false; Action = 'path-missing'; Detail = "share path '$Path' does not exist" }
     }
@@ -124,7 +154,7 @@ function New-IdempotentSmbShare {
 
     $spec = [pscustomobject]@{
         Name = $Name; Path = $Path; Description = $Description
-        ReadAccess = $ReadAccess; FullAccess = $FullAccess
+        ReadAccess = $resolvedRead; FullAccess = $resolvedFull
     }
     try {
         & $script:SmbInvokers.NewShare $spec
