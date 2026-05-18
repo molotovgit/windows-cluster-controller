@@ -42,12 +42,32 @@ function Get-DefaultProvisioningInvoker {
             $p = Start-Process -FilePath $NodeExe -ArgumentList $argv -WorkingDirectory $WorkingDir -PassThru -Wait -WindowStyle Hidden
             [pscustomobject]@{ ExitCode = [int]$p.ExitCode }
         }
-        # Run `meshctrl AddDeviceGroup`. ExitCode==0 on create OR already-exists (idempotent).
+        # Run `node meshctrl.js <verb>`. MeshCentral installs meshctrl.js as
+        # part of the npm meshcentral package -- there is NO meshctrl.exe.
+        # Auth args (--url / --loginuser / --loginpass / --ignoreCert) are
+        # accepted in the $Auth hashtable and appended automatically.
+        # ExitCode==0 on create OR already-exists (idempotent in modern versions).
         RunMeshctrl = {
-            param([string]$Verb, [string[]]$ExtraArgv)
-            $argv = @($Verb) + $ExtraArgv
-            $p = Start-Process -FilePath 'meshctrl.exe' -ArgumentList $argv -PassThru -Wait -WindowStyle Hidden
-            [pscustomobject]@{ ExitCode = [int]$p.ExitCode }
+            param([string]$Verb, [string[]]$ExtraArgv, [hashtable]$Auth)
+            # Auto-resolve meshctrl.js: $Auth.MeshctrlPath takes precedence,
+            # then $env:CLUSTERCTRL_MESHCTRL_PATH, then the default location.
+            $meshctrl = if ($Auth -and $Auth.MeshctrlPath) { $Auth.MeshctrlPath }
+                        elseif ($env:CLUSTERCTRL_MESHCTRL_PATH) { $env:CLUSTERCTRL_MESHCTRL_PATH }
+                        else { Join-Path $env:ProgramData 'MeshCentral\node_modules\meshcentral\meshctrl.js' }
+            $nodeExe = (Get-Command node -ErrorAction SilentlyContinue).Source
+            if (-not $nodeExe -or -not (Test-Path -LiteralPath $meshctrl)) {
+                return [pscustomobject]@{ ExitCode = -1; Detail = "node or meshctrl.js missing (node='$nodeExe' meshctrl='$meshctrl')" }
+            }
+            $argv = @($meshctrl, $Verb)
+            if ($Auth) {
+                if ($Auth.Url)       { $argv += @('--url', $Auth.Url) }
+                if ($Auth.LoginUser) { $argv += @('--loginuser', $Auth.LoginUser) }
+                if ($Auth.LoginPass) { $argv += @('--loginpass', $Auth.LoginPass) }
+                if ($Auth.IgnoreCert) { $argv += '--ignoreCert' }
+            }
+            if ($ExtraArgv) { $argv += $ExtraArgv }
+            $p = Start-Process -FilePath $nodeExe -ArgumentList $argv -PassThru -Wait -WindowStyle Hidden
+            [pscustomobject]@{ ExitCode = [int]$p.ExitCode; Detail = '' }
         }
         # Generate a random password of -Length bytes, web-safe characters.
         NewSecurePassword = {
@@ -188,14 +208,26 @@ admin_pass: $pass
         _step 'Write admin-bootstrap.txt' 'Pass' 'password sourced from env var; bootstrap file not written'
     }
 
+    # Auth context for meshctrl calls below. Connects to local MeshCentral
+    # over its WebSocket control endpoint. --ignoreCert because the cert
+    # we just generated in Stage 7 is self-signed.
+    $authCtx = @{
+        Url        = 'wss://127.0.0.1/control.ashx'
+        LoginUser  = $user
+        LoginPass  = $pass
+        IgnoreCert = $true
+        MeshctrlPath = (Join-Path $mcRoot 'node_modules\meshcentral\meshctrl.js')
+    }
+
     # 2. Device groups.
     foreach ($g in $hostsGrp, $vmsGrp) {
-        $r = & $script:ProvisioningInvokers.RunMeshctrl 'AddDeviceGroup' @('--name', $g)
+        $r = & $script:ProvisioningInvokers.RunMeshctrl 'AddDeviceGroup' @('--name', $g) $authCtx
         # meshctrl returns 0 for both create and already-exists in modern versions.
         if ($r.ExitCode -eq 0) {
             _step "Device group '$g'" 'Pass' 'AddDeviceGroup ok (or already exists)'
         } else {
-            _step "Device group '$g'" 'Warn' "meshctrl AddDeviceGroup exited $($r.ExitCode)"
+            $detail = if ($r.PSObject.Properties['Detail']) { $r.Detail } else { '' }
+            _step "Device group '$g'" 'Warn' "meshctrl AddDeviceGroup exited $($r.ExitCode) (detail: $detail); operator can re-create via web UI."
         }
     }
 
@@ -204,11 +236,11 @@ admin_pass: $pass
     foreach ($g in $hostsGrp, $vmsGrp) {
         $groupDir = Join-Path $agentsDir $g
         & $script:ProvisioningInvokers.EnsureDir $groupDir
-        $r = & $script:ProvisioningInvokers.RunMeshctrl 'GenerateInviteLink' @('--group', $g, '--output', $groupDir)
+        $r = & $script:ProvisioningInvokers.RunMeshctrl 'GenerateInviteLink' @('--group', $g, '--output', $groupDir) $authCtx
         if ($r.ExitCode -eq 0) {
             _step "Agent bundle '$g'" 'Pass' "GenerateInviteLink -> $groupDir"
         } else {
-            _step "Agent bundle '$g'" 'Warn' "meshctrl GenerateInviteLink for '$g' exited $($r.ExitCode); operator can re-run."
+            _step "Agent bundle '$g'" 'Warn' "meshctrl GenerateInviteLink for '$g' exited $($r.ExitCode); operator can re-run or use web UI."
         }
     }
 
