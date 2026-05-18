@@ -120,23 +120,49 @@ function Invoke-AnnouncerStage {
     _step 'Write announcer script' 'Pass' "$scriptPath"
 
     # 2. Ensure NSSM is reachable before calling Install-NssmService. NSSM
-    # isn't part of Windows; we have to download it. lib/Service's invoker
-    # calls 'nssm.exe' by name, so we install it into a location on PATH.
-    function _EnsureNssm {
-        $existing = Get-Command nssm.exe -ErrorAction SilentlyContinue
-        if ($existing) { return $existing.Source }
-        $nssmDir = Join-Path $env:ProgramData 'ClusterController\bin'
-        $nssmExe = Join-Path $nssmDir 'nssm.exe'
-        if (Test-Path -LiteralPath $nssmExe) {
-            if (-not ($env:Path -split ';' | Where-Object { $_ -eq $nssmDir })) {
-                $env:Path = "$nssmDir;$env:Path"
+    # isn't part of Windows; we have to source it from one of:
+    #   a) Already on PATH (operator pre-installed, or a previous run).
+    #   b) A previous run staged it at %ProgramData%\ClusterController\bin\.
+    #   c) winget install NSSM.NSSM (preferred -- uses the same nssm.cc/ci
+    #      CDN path which is more reliable than nssm.cc/release/*).
+    #   d) Direct download from nssm.cc/release/nssm-2.24.zip (last resort;
+    #      observed to 503 in 2026-05, so kept only as a safety net).
+    # lib/Service's invoker calls 'nssm.exe' by name -- so whichever path we
+    # take, we end by ensuring nssm.exe is resolvable via Get-Command.
+    function _RefreshPathFromRegistry {
+        # winget installs may modify the system PATH but the change is not
+        # visible to processes that started before the install. Pull both
+        # Machine and User PATH and merge into the current process env so
+        # Get-Command picks up the freshly-installed nssm.
+        $machine = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+        $user    = [Environment]::GetEnvironmentVariable('Path', 'User')
+        $merged  = ($machine, $user) | Where-Object { $_ } | ForEach-Object { $_ }
+        if ($merged) { $env:Path = ($merged -join ';') }
+    }
+    function _TryWingetInstallNssm {
+        $winget = Get-Command winget -ErrorAction SilentlyContinue
+        if (-not $winget) { return $false }
+        try {
+            $p = Start-Process -FilePath $winget.Source `
+                -ArgumentList @('install','-e','--id','NSSM.NSSM','--silent','--accept-source-agreements','--accept-package-agreements') `
+                -PassThru -Wait -WindowStyle Hidden
+            # winget returns 0 on success and on "already installed".
+            if ($p.ExitCode -in 0, -1978335189) {
+                _RefreshPathFromRegistry
+                return [bool](Get-Command nssm -ErrorAction SilentlyContinue)
             }
-            return $nssmExe
+        } catch { $null = $_ }
+        return $false
+    }
+    function _TryDirectDownloadNssm([string]$NssmDir, [string]$NssmExe) {
+        if (-not (Test-Path -LiteralPath $NssmDir)) {
+            New-Item -Path $NssmDir -ItemType Directory -Force | Out-Null
         }
-        Write-Host "Downloading NSSM (~500 KB) from nssm.cc ..." -ForegroundColor Yellow
-        if (-not (Test-Path -LiteralPath $nssmDir)) {
-            New-Item -Path $nssmDir -ItemType Directory -Force | Out-Null
-        }
+        # nssm.cc/release/* has been observed to return 503 Service
+        # Temporarily Unavailable; the /ci/* CDN that winget uses is more
+        # reliable, but we don't know the version-stamped URL outside winget.
+        # Try /release/ once, then bail with a clear error pointing the
+        # operator at the winget alternative.
         $zipUrl = 'https://nssm.cc/release/nssm-2.24.zip'
         $zip = Join-Path $env:TEMP ("nssm-" + [guid]::NewGuid().ToString('N').Substring(0,8) + '.zip')
         try {
@@ -148,14 +174,41 @@ function Invoke-AnnouncerStage {
                    Where-Object { $_.DirectoryName -like "*\$arch" } |
                    Select-Object -First 1
             if (-not $src) { throw "nssm.exe ($arch) not found in extracted archive" }
-            Copy-Item -LiteralPath $src.FullName -Destination $nssmExe -Force
+            Copy-Item -LiteralPath $src.FullName -Destination $NssmExe -Force
             Remove-Item -LiteralPath $extractDir -Recurse -Force -ErrorAction SilentlyContinue
         } finally {
             Remove-Item -LiteralPath $zip -Force -ErrorAction SilentlyContinue
         }
-        if (-not (Test-Path -LiteralPath $nssmExe)) {
-            throw "NSSM download succeeded but nssm.exe not at $nssmExe"
+        if (-not (Test-Path -LiteralPath $NssmExe)) {
+            throw "NSSM download from $zipUrl completed but nssm.exe not at $NssmExe"
         }
+    }
+    function _EnsureNssm {
+        # (a) Already on PATH?
+        $existing = Get-Command nssm -ErrorAction SilentlyContinue
+        if ($existing) { return $existing.Source }
+
+        # (b) Staged by a previous run?
+        $nssmDir = Join-Path $env:ProgramData 'ClusterController\bin'
+        $nssmExe = Join-Path $nssmDir 'nssm.exe'
+        if (Test-Path -LiteralPath $nssmExe) {
+            if (-not ($env:Path -split ';' | Where-Object { $_ -eq $nssmDir })) {
+                $env:Path = "$nssmDir;$env:Path"
+            }
+            return $nssmExe
+        }
+
+        # (c) winget -- preferred over direct download (observed reliable
+        # when nssm.cc/release/* returns 503).
+        Write-Host 'Installing NSSM via winget ...' -ForegroundColor Yellow
+        if (_TryWingetInstallNssm) {
+            $cmd = Get-Command nssm -ErrorAction SilentlyContinue
+            if ($cmd) { return $cmd.Source }
+        }
+
+        # (d) Direct download from nssm.cc -- last resort.
+        Write-Host 'winget unavailable or did not yield nssm; falling back to direct download from nssm.cc ...' -ForegroundColor Yellow
+        _TryDirectDownloadNssm -NssmDir $nssmDir -NssmExe $nssmExe
         # Prepend to PATH for this process so lib/Service's `Start-Process nssm.exe` finds it.
         $env:Path = "$nssmDir;$env:Path"
         return $nssmExe
