@@ -1,5 +1,11 @@
 #requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0.0' }
 
+# Test file: synthesises throwaway SecureStrings from in-test literals to
+# drive the import-PFX paths through stubbed invokers. No real secrets.
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingConvertToSecureStringWithPlainText', '',
+    Justification='Test code; SecureString is constructed from literal "x" only to satisfy parameter types in the stubbed invoker.')]
+param()
+
 BeforeAll {
     $repoRoot   = (Resolve-Path "$PSScriptRoot\..\..").Path
     $modulePath = Join-Path $repoRoot 'src\lib\Tls.psm1'
