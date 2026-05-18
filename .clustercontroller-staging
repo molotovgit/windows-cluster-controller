@@ -1,0 +1,1 @@
+This marker file identifies a directory as the controller-setup staging root. Created by install.ps1 to mark directories it is safe to extract into / write logs under. Do not delete on a configured controller.
