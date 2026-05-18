@@ -11,6 +11,10 @@
     against a working cert.
 #>
 
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingConvertToSecureStringWithPlainText', '',
+    Justification = 'GetPfxPassword reads the PFX password from an operator-set process env var (named in tls.import.pfx_password_envvar) and converts it to a SecureString. The plaintext lives in the env var, never in source.')]
+param()
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
