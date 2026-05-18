@@ -30,36 +30,68 @@ This repo is **half of a pair**. The companion repo, [`windows-cluster-host`](ht
 - Windows 11 Pro / Enterprise / Education on the controller PC (Home is NOT supported)
 - Administrator rights (service install, firewall, SMB share)
 - ≥ 8 GB RAM, ≥ 50 GB free on the system drive
-- Network reachability to every host PC (LAN, same broadcast domain ideally for mDNS-style discovery)
+- Network reachability to every host PC (LAN, same broadcast domain ideally)
 
 ## Status
 
-🚧 In active development. 52-PR roadmap; see `docs/ARCHITECTURE.md` for the target stage list.
+✅ All 13 stages implemented and unit + integration tested. End-to-end orchestrator
+dry-run passes **Overall=Pass** on a fully-stubbed Win11 Pro sandbox — the PRIMARY
+GOAL acceptance test is green.
+
+**Local checkout install** (run as Administrator):
+
+```powershell
+git clone https://github.com/molotovgit/windows-cluster-controller
+cd windows-cluster-controller
+.\install.ps1 -ControllerHostname controller.lan -WriteConfig
+```
+
+For a no-mutation preview:
+
+```powershell
+.\install.ps1 -ControllerHostname controller.lan -DryRun -NoRestart
+```
+
+⚠️ **Caveat (same as the host repo):** all testing here is **mocked**. The 13 stages
+have never been run against real `msiexec`, real `New-SelfSignedCertificate`, real
+`Get-NetFirewallRule`, real `New-SmbShare`, real `npm install`, or a real
+MeshCentral. The script is logically green against stubs; real-hardware validation
+is a separate step.
 
 ## Repo layout
 
 ```
 ├── src/
-│   ├── lib/         # Reusable PowerShell modules (logging, state, retry, …)
-│   ├── stages/      # The 25 setup stages, each a self-contained .ps1
+│   ├── lib/        # Reusable modules: Logging, State, Retry, HardwareDetect,
+│   │               #   Net, Pkg, Service, Firewall, Tls, Smb, Config, Announce
+│   ├── stages/     # The 13 setup stages, each a self-contained .ps1
 │   └── Invoke-ClusterControllerSetup.ps1   # Top-level orchestrator
 ├── config/
 │   └── cluster-controller.example.json
-├── scripts/         # Operator helpers (backup, restore, update, uninstall)
+├── scripts/        # Operator helpers (Backup, Restore, Update, Uninstall — TBD)
 ├── tests/
-│   ├── unit/        # Pester unit tests with mocked external cmdlets
-│   ├── integration/ # End-to-end dry-run with all I/O mocked
-│   └── fixtures/    # Mock data for tests
+│   ├── unit/       # 200+ Pester unit tests with mocked external surfaces
+│   ├── integration/# E2E dry-run + orchestrator wiring tests
+│   └── Invoke-Sandbox.ps1   # lint + unit + integration + manifests
 ├── docs/
-│   ├── ARCHITECTURE.md
-│   ├── TROUBLESHOOTING.md
-│   ├── REVIEW_PROCESS.md
-│   └── RUNBOOK.md
-├── REVIEW_PROMPT.md # Reviewer brief used by the peer-review subagent
-└── install.ps1      # One-liner bootstrap (built in PR 41)
+└── install.ps1
 ```
 
-Every change is reviewed by an independent Claude subagent against `REVIEW_PROMPT.md` before merge — see [docs/REVIEW_PROCESS.md](docs/REVIEW_PROCESS.md).
+## Stage flow
+
+1. **Preflight** — admin, SKU, RAM, disk, network, scheduler service, exec policy, port 443 free
+2. **PowerShell 7** — winget primary → MSI fallback
+3. **OpenSSH client** — WindowsCapability primary → DISM fallback
+4. **Node.js** — SHA256-verified MSI install
+5. **DB** — NeDB skip (default) or MongoDB install + loopback bind
+6. **MeshCentral** — npm install + config.json with TLS thumbprint placeholder
+7. **TLS** — self-signed (default) / import PFX / Let's Encrypt stub
+8. **Firewall** — idempotent rules: HTTPS, agent, announcer, MongoDB loopback
+9. **MeshCentral service** — node `--install` primary → NSSM fallback → start + HTTPS probe
+10. **Provisioning** — admin account (env-var password or generated) + device groups + agent bundles
+11. **Share** — golden-VHDX drop dir + SMB ClusterShare export
+12. **Announcer** — HttpListener-based discovery responder, NSSM-registered
+13. **Verify** — health checks + operator setup-summary.txt
 
 ## Cost
 
