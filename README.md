@@ -38,6 +38,17 @@ This repo is **half of a pair**. The companion repo, [`windows-cluster-host`](ht
 dry-run passes **Overall=Pass** on a fully-stubbed Win11 Pro sandbox — the PRIMARY
 GOAL acceptance test is green.
 
+**One-liner install** (run as Administrator under **pwsh 7**):
+
+```powershell
+iwr -useb https://raw.githubusercontent.com/molotovgit/windows-cluster-controller/main/install.ps1 -OutFile install.ps1
+.\install.ps1 -FromGitHub -ControllerHostname controller.lan -WriteConfig
+```
+
+`-FromGitHub` makes `install.ps1` fetch the rest of the repo from the
+GitHub archive zip when no other source is given (`-ZipUrl`,
+`$env:CLUSTERCTRL_REPO_ZIP`, or a local checkout).
+
 **Local checkout install** (run as Administrator):
 
 ```powershell

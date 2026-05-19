@@ -53,6 +53,10 @@ param(
     [switch]$NoRestart,
     [string]$StagingRoot,
     [string]$ZipUrl,
+    [switch]$FromGitHub,
+    [string]$GitHubOrg = 'molotovgit',
+    [string]$GitHubRepo = 'windows-cluster-controller',
+    [string]$GitHubBranch = 'main',
     [string]$NodeMsiUrl, [string]$NodeMsiSha256,
     [string]$Pwsh7MsiUrl, [string]$Pwsh7MsiSha256,
     [string]$MongoMsiUrl, [string]$MongoMsiSha256
@@ -70,9 +74,18 @@ function Test-IsAdministrator {
 }
 
 function Resolve-ZipUrl {
-    param([string]$Override)
+    param(
+        [string]$Override,
+        [switch]$FromGitHub,
+        [string]$GitHubOrg,
+        [string]$GitHubRepo,
+        [string]$GitHubBranch
+    )
     if ($Override) { return $Override }
     if ($env:CLUSTERCTRL_REPO_ZIP) { return "$env:CLUSTERCTRL_REPO_ZIP" }
+    if ($FromGitHub) {
+        return "https://github.com/$GitHubOrg/$GitHubRepo/archive/refs/heads/$GitHubBranch.zip"
+    }
     return $null
 }
 
@@ -228,9 +241,11 @@ if ($env:CLUSTERCTRL_NOAUTORUN -ne '1') {
     $localRepo = Split-Path -Parent $PSCommandPath
     $copied    = Copy-RepoTree -ScriptRoot $localRepo -Destination $StagingRoot
     if (-not $copied) {
-        $url = Resolve-ZipUrl -Override $ZipUrl
+        $url = Resolve-ZipUrl -Override $ZipUrl `
+                              -FromGitHub:$FromGitHub `
+                              -GitHubOrg $GitHubOrg -GitHubRepo $GitHubRepo -GitHubBranch $GitHubBranch
         if (-not $url) {
-            Write-Error "Not in a local repo and no -ZipUrl / `$env:CLUSTERCTRL_REPO_ZIP set. Either run install.ps1 from a checkout or supply -ZipUrl."
+            Write-Error "Not in a local repo and no -ZipUrl / `$env:CLUSTERCTRL_REPO_ZIP / -FromGitHub set. Either run install.ps1 from a checkout or supply one of those."
             exit 2
         }
         $zip = Join-Path ([System.IO.Path]::GetTempPath()) ('cluster-controller-' + [guid]::NewGuid().ToString('N').Substring(0,8) + '.zip')
@@ -239,6 +254,13 @@ if ($env:CLUSTERCTRL_NOAUTORUN -ne '1') {
         if (-not (Test-Path -LiteralPath $StagingRoot)) { New-Item -Path $StagingRoot -ItemType Directory -Force | Out-Null }
         Expand-Archive -Path $zip -DestinationPath $StagingRoot -Force
         Remove-Item -LiteralPath $zip -Force -ErrorAction SilentlyContinue
+        # GitHub archives extract to a single top-level dir "<repo>-<branch>/...";
+        # flatten so Invoke-ClusterControllerSetup.ps1 is at <StagingRoot>\src\.
+        $kids = @(Get-ChildItem -LiteralPath $StagingRoot -Directory)
+        if ($kids.Count -eq 1 -and -not (Test-Path -LiteralPath (Join-Path $StagingRoot 'src'))) {
+            Get-ChildItem -LiteralPath $kids[0].FullName -Force | Move-Item -Destination $StagingRoot -Force
+            Remove-Item -LiteralPath $kids[0].FullName -Recurse -Force -ErrorAction SilentlyContinue
+        }
         Set-Content -LiteralPath (Join-Path $StagingRoot '.clustercontroller-staging') -Value 'staged' -Encoding utf8
         $copied = $StagingRoot
     }
